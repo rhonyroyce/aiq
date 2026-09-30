@@ -1,0 +1,144 @@
+services:
+  local-llm:
+    image: vllm/vllm-openai:latest
+    container_name: aiq-local-llm
+    command:
+      - --model
+      - openai/gpt-oss-20b
+      - --served-model-name
+      - openai/gpt-oss-20b
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --gpu-memory-utilization
+      - "0.90"
+      - --max-model-len
+      - "32768"
+      - --max-num-seqs
+      - "2"
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - openai
+    environment:
+      HF_HOME: /models
+      VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8: "1"
+    volumes:
+      - hf-models:/models
+    ports:
+      - "8001:8000"
+    gpus: all
+    ipc: host
+    networks:
+      - aiq-network
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30m
+    restart: unless-stopped
+
+  local-embed:
+    build:
+      context: ../../integrations/local_embeddings
+    image: aiq-local-embeddings:2.2.0
+    container_name: aiq-local-embed
+    environment:
+      EMBED_MODEL: BAAI/bge-small-en-v1.5
+      FASTEMBED_CACHE_PATH: /models
+    volumes:
+      - embedding-models:/models
+    ports:
+      - "8081:8080"
+    networks:
+      - aiq-network
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=5)"
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 5m
+    restart: unless-stopped
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: aiq-searxng
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8888/
+    volumes:
+      - ../../integrations/searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - searxng-cache:/var/cache/searxng
+    ports:
+      - "8888:8080"
+    networks:
+      - aiq-network
+    restart: unless-stopped
+
+  searxng-mcp:
+    build:
+      context: ../../integrations/searxng_mcp
+    image: aiq-searxng-mcp:2.2.0
+    container_name: aiq-searxng-mcp
+    environment:
+      SEARXNG_URL: http://searxng:8080
+      SEARXNG_TIMEOUT_SECONDS: "30"
+    ports:
+      - "9901:9901"
+    networks:
+      - aiq-network
+    depends_on:
+      - searxng
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import socket; s=socket.create_connection(('localhost',9901),5); s.close()"
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  aiq-agent:
+    environment:
+      CONFIG_FILE: /app/configs/config_web_local_5090.yml
+      LOCAL_LLM_BASE_URL: http://local-llm:8000/v1
+      LOCAL_LLM_MODEL: openai/gpt-oss-20b
+      LOCAL_LLM_API_KEY: local # pragma: allowlist secret
+      NVIDIA_API_KEY: local # pragma: allowlist secret
+      AIQ_EMBED_MODEL: BAAI/bge-small-en-v1.5
+      AIQ_EMBED_BASE_URL: http://local-embed:8080/v1
+      AIQ_CHROMA_DIR: /app/data/chroma
+      SEARXNG_MCP_URL: http://searxng-mcp:9901/mcp
+      DASK_NWORKERS: "1"
+      DASK_NTHREADS: "2"
+      DASK_MEMORY_LIMIT: 6GB
+      AIQ_MAX_ACTIVE_DEEP_RESEARCH_JOBS_PER_PRINCIPAL: "1"
+      AIQ_MAX_ACTIVE_DEEP_RESEARCH_JOBS_GLOBAL: "1"
+    volumes:
+      - ../../configs:/app/configs:ro
+      - aiq-local-data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      local-llm:
+        condition: service_healthy
+      local-embed:
+        condition: service_healthy
+      searxng-mcp:
+        condition: service_healthy
+
+volumes:
+  aiq-local-data:
+  embedding-models:
+  hf-models:
+  searxng-cache:

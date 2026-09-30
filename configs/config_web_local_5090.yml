@@ -1,0 +1,154 @@
+# Local single-GPU profile for an RTX 5090 (32 GiB).
+# All LLM and embedding inference stays on this machine.
+
+general:
+  use_uvloop: true
+  telemetry:
+    logging:
+      console:
+        _type: console
+        level: INFO
+  front_end:
+    _type: aiq_api
+    runner_class: aiq_api.plugin.AIQAPIWorker
+    db_url: ${NAT_JOB_STORE_DB_URL:-sqlite+aiosqlite:///./data/jobs.db}
+    expiry_seconds: 604800
+    cors:
+      allow_origin_regex: 'http://localhost(:\d+)?|http://127.0.0.1(:\d+)?'
+      allow_methods: [GET, POST, DELETE, OPTIONS]
+      allow_headers: ["*"]
+      allow_credentials: true
+      expose_headers: ["*"]
+
+llms:
+  local_intent_llm:
+    _type: openai
+    model_name: ${LOCAL_LLM_MODEL:-openai/gpt-oss-20b}
+    base_url: ${LOCAL_LLM_BASE_URL:-http://localhost:8001/v1}
+    api_key: ${LOCAL_LLM_API_KEY:-local}
+    temperature: 0.1
+    max_tokens: 1024
+    num_retries: 3
+    parallel_tool_calls: false
+
+  local_agent_llm:
+    _type: openai
+    model_name: ${LOCAL_LLM_MODEL:-openai/gpt-oss-20b}
+    base_url: ${LOCAL_LLM_BASE_URL:-http://localhost:8001/v1}
+    api_key: ${LOCAL_LLM_API_KEY:-local}
+    temperature: 0.2
+    max_tokens: 8192
+    num_retries: 3
+    parallel_tool_calls: false
+
+  local_writer_llm:
+    _type: openai
+    model_name: ${LOCAL_LLM_MODEL:-openai/gpt-oss-20b}
+    base_url: ${LOCAL_LLM_BASE_URL:-http://localhost:8001/v1}
+    api_key: ${LOCAL_LLM_API_KEY:-local}
+    temperature: 0.2
+    max_tokens: 12288
+    num_retries: 3
+    parallel_tool_calls: false
+
+function_groups:
+  searxng_search:
+    _type: mcp_client
+    include:
+      - search_web
+    server:
+      transport: streamable-http
+      url: ${SEARXNG_MCP_URL:-http://localhost:9901/mcp}
+    tool_overrides:
+      search_web:
+        description: >-
+          Search the public web through the local SearXNG metasearch service.
+          Returns source titles, URLs, snippets, and publication dates for citation.
+
+functions:
+  data_sources:
+    _type: data_source_registry
+    sources:
+      - id: searxng
+        name: "Private Web Search"
+        description: "Search via the locally hosted SearXNG metasearch service."
+        tools:
+          - searxng_search
+        default_enabled: true
+      - id: tavily
+        name: "Tavily Search"
+        description: "Optional hosted search fallback; requires TAVILY_API_KEY."
+        tools:
+          - web_search_tool
+          - advanced_web_search_tool
+        default_enabled: false
+      - id: knowledge_layer
+        name: "Knowledge Base"
+        description: "Search documents uploaded to the local Chroma knowledge base."
+        tools:
+          - knowledge_search
+        default_enabled: true
+
+  web_search_tool:
+    _type: tavily_web_search
+    max_results: 5
+    max_content_length: 2000
+
+  advanced_web_search_tool:
+    _type: tavily_web_search
+    max_results: 3
+    advanced_search: true
+
+  knowledge_search:
+    _type: knowledge_retrieval
+    backend: llamaindex
+    collection_name: ${COLLECTION_NAME:-local_documents}
+    generate_summary: true
+    summary_model: local_agent_llm
+    summary_db: ${AIQ_SUMMARY_DB:-sqlite+aiosqlite:///./data/summaries.db}
+    top_k: 5
+    chroma_dir: ${AIQ_CHROMA_DIR:-./data/chroma}
+
+  intent_classifier:
+    _type: intent_classifier
+    llm: local_intent_llm
+    verbose: true
+
+  clarifier_agent:
+    _type: clarifier_agent
+    llm: local_agent_llm
+    max_turns: 3
+    log_response_max_chars: 2000
+    verbose: true
+
+  shallow_research_agent:
+    _type: shallow_research_agent
+    llm: local_agent_llm
+    exclude_tools:
+      - advanced_web_search_tool
+    max_llm_turns: 8
+    max_tool_iterations: 4
+    verbose: true
+
+  deep_research_agent:
+    _type: deep_research_agent
+    enable_citation_verification: true
+    orchestrator_llm: local_agent_llm
+    source_router_llm: local_agent_llm
+    researcher_llm: local_agent_llm
+    planner_llm: local_agent_llm
+    writer_llm: local_writer_llm
+    max_research_concurrency: 2
+    max_concurrent_source_tool_calls: 2
+    max_source_tool_batch_size: 3
+    exclude_tools:
+      - web_search_tool
+    verbose: true
+
+workflow:
+  _type: chat_deepresearcher_agent
+  verbose: true
+  enable_escalation: true
+  enable_clarifier: true
+  use_async_deep_research: true
+  checkpoint_db: ${AIQ_CHECKPOINT_DB:-./data/checkpoints.db}
