@@ -56,6 +56,7 @@ from .custom_middleware import SourceRoutingGuardMiddleware
 from .custom_middleware import SourceRoutingPersistenceMiddleware
 from .custom_middleware import StateMutationGuardMiddleware
 from .custom_middleware import StructuredResponseTextFallbackMiddleware
+from .custom_middleware import SystemMessageOrderMiddleware
 from .custom_middleware import TodoQuotaMiddleware
 from .custom_middleware import TodoSuppressionMiddleware
 from .custom_middleware import ToolNameSanitizationMiddleware
@@ -235,6 +236,7 @@ def build_common_middleware(
     valid_tool_names.update(FILESYSTEM_TOOL_NAMES)
     valid_tool_names.update(extra_valid_tool_names)
     middleware: list[Any] = [
+        SystemMessageOrderMiddleware(),
         EmptyContentFixMiddleware(),
         ToolNameSanitizationMiddleware(valid_tool_names=sorted(valid_tool_names)),
         ToolRetryMiddleware(max_retries=3, backoff_factor=2.0, initial_delay=1.0),
@@ -268,6 +270,7 @@ def build_orchestrator_middleware(
     valid_tool_names.add(research_batch_tool_name)
     valid_tool_names.update(FILESYSTEM_TOOL_NAMES)
     return [
+        SystemMessageOrderMiddleware(),
         EmptyContentFixMiddleware(),
         SourceRoutingGuardMiddleware(enabled=enable_source_router, required_subagent=SOURCE_ROUTER_AGENT),
         ToolNameSanitizationMiddleware(valid_tool_names=sorted(valid_tool_names)),
@@ -281,6 +284,7 @@ def build_orchestrator_middleware(
 def build_source_router_middleware(*, extra_valid_tool_names: Sequence[str] = ()) -> list[Any]:
     """Build minimal middleware for the source-router-agent."""
     return [
+        SystemMessageOrderMiddleware(),
         EmptyContentFixMiddleware(),
         ToolNameSanitizationMiddleware(valid_tool_names=sorted(extra_valid_tool_names)),
         ToolRetryMiddleware(max_retries=3, backoff_factor=2.0, initial_delay=1.0),

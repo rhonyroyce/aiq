@@ -236,7 +236,9 @@ start_frontend() {
 
     cd "$UI_DIR"
 
-    npm run dev &
+    # The UI proxy listens on 3000 while Next.js listens on 3001. deploy/.env
+    # may define PORT for the backend/Compose stack, so override it explicitly.
+    PORT=3000 npm run dev &
     FRONTEND_PID=$!
     echo "Frontend PID: $FRONTEND_PID"
 

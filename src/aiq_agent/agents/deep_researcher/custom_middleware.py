@@ -272,6 +272,42 @@ class EmptyContentFixMiddleware(AgentMiddleware):
         return await handler(request.override(messages=fixed_messages))
 
 
+class SystemMessageOrderMiddleware(AgentMiddleware):
+    """Keep provider-strict chat histories to one plain-text leading system prompt.
+
+    Deep-agent middleware can add system messages to an existing history. Ollama's
+    Qwen templates also reject LangChain's multi-block system content as misplaced
+    system messages. Fold every instruction into one plain-text ``system_message``.
+    """
+
+    @staticmethod
+    def _clean_request(request):
+        inline_system_messages = [msg for msg in request.messages if isinstance(msg, SystemMessage)]
+        leading_system_message = getattr(request, "system_message", None)
+        leading_has_blocks = isinstance(leading_system_message, SystemMessage) and not isinstance(
+            leading_system_message.content, str
+        )
+        if not inline_system_messages and not leading_has_blocks:
+            return request
+
+        messages = [msg for msg in request.messages if not isinstance(msg, SystemMessage)]
+        system_messages = []
+        if isinstance(leading_system_message, SystemMessage):
+            system_messages.append(leading_system_message)
+        system_messages.extend(inline_system_messages)
+
+        content = "\n\n".join(message.text for message in system_messages if message.text)
+        return request.override(messages=messages, system_message=SystemMessage(content=content))
+
+    def wrap_model_call(self, request, handler):
+        """Normalize system-message placement before a synchronous model call."""
+        return handler(self._clean_request(request))
+
+    async def awrap_model_call(self, request, handler):
+        """Normalize system-message placement before an asynchronous model call."""
+        return await handler(self._clean_request(request))
+
+
 class ExecuteTimeoutClampMiddleware(AgentMiddleware):
     """Clamp the sandbox ``execute`` tool's per-call timeout to a configured ceiling.
 

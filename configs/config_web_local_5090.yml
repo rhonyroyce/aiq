@@ -23,32 +23,35 @@ general:
 llms:
   local_intent_llm:
     _type: openai
-    model_name: ${LOCAL_LLM_MODEL:-openai/gpt-oss-20b}
-    base_url: ${LOCAL_LLM_BASE_URL:-http://localhost:8001/v1}
-    api_key: ${LOCAL_LLM_API_KEY:-local}
+    model_name: ${LOCAL_LLM_MODEL:-qwen3.8:27b}
+    base_url: ${LOCAL_LLM_BASE_URL:-http://localhost:11434/v1}
+    api_key: ${LOCAL_LLM_API_KEY}
     temperature: 0.1
     max_tokens: 1024
-    num_retries: 3
+    request_timeout: 300
+    num_retries: 1
     parallel_tool_calls: false
 
   local_agent_llm:
     _type: openai
-    model_name: ${LOCAL_LLM_MODEL:-openai/gpt-oss-20b}
-    base_url: ${LOCAL_LLM_BASE_URL:-http://localhost:8001/v1}
-    api_key: ${LOCAL_LLM_API_KEY:-local}
+    model_name: ${LOCAL_LLM_MODEL:-qwen3.8:27b}
+    base_url: ${LOCAL_LLM_BASE_URL:-http://localhost:11434/v1}
+    api_key: ${LOCAL_LLM_API_KEY}
     temperature: 0.2
     max_tokens: 8192
-    num_retries: 3
+    request_timeout: 300
+    num_retries: 1
     parallel_tool_calls: false
 
   local_writer_llm:
     _type: openai
-    model_name: ${LOCAL_LLM_MODEL:-openai/gpt-oss-20b}
-    base_url: ${LOCAL_LLM_BASE_URL:-http://localhost:8001/v1}
-    api_key: ${LOCAL_LLM_API_KEY:-local}
+    model_name: ${LOCAL_LLM_MODEL:-qwen3.8:27b}
+    base_url: ${LOCAL_LLM_BASE_URL:-http://localhost:11434/v1}
+    api_key: ${LOCAL_LLM_API_KEY}
     temperature: 0.2
     max_tokens: 12288
-    num_retries: 3
+    request_timeout: 300
+    num_retries: 1
     parallel_tool_calls: false
 
 function_groups:
@@ -103,8 +106,12 @@ functions:
     _type: knowledge_retrieval
     backend: llamaindex
     collection_name: ${COLLECTION_NAME:-local_documents}
-    generate_summary: true
-    summary_model: local_agent_llm
+    embed_model: ${AIQ_EMBED_MODEL:-qwen3-embedding:8b}
+    embed_base_url: ${AIQ_EMBED_BASE_URL:-http://localhost:11434/v1}
+    reranker_model: ${AIQ_RERANKER_MODEL:-dengcao/Qwen3-Reranker-4B:Q8_0}
+    reranker_base_url: ${AIQ_RERANKER_BASE_URL:-http://localhost:11434}
+    reranker_candidates: 12
+    generate_summary: false
     summary_db: ${AIQ_SUMMARY_DB:-sqlite+aiosqlite:///./data/summaries.db}
     top_k: 5
     chroma_dir: ${AIQ_CHROMA_DIR:-./data/chroma}
@@ -112,6 +119,7 @@ functions:
   intent_classifier:
     _type: intent_classifier
     llm: local_intent_llm
+    llm_timeout: 300
     verbose: true
 
   clarifier_agent:

@@ -47,6 +47,7 @@ from aiq_agent.agents.deep_researcher.custom_middleware import SourceRoutingGuar
 from aiq_agent.agents.deep_researcher.custom_middleware import SourceRoutingPersistenceMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import StateMutationGuardMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import StructuredResponseTextFallbackMiddleware
+from aiq_agent.agents.deep_researcher.custom_middleware import SystemMessageOrderMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import TodoQuotaMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import TodoSuppressionMiddleware
 from aiq_agent.agents.deep_researcher.custom_middleware import ToolNameSanitizationMiddleware
@@ -67,6 +68,67 @@ class _ToolBindingFakeChatModel(FakeMessagesListChatModel):
 
     def bind_tools(self, tools, *, tool_choice=None, **kwargs):
         return self
+
+
+class TestSystemMessageOrderMiddleware:
+    @pytest.mark.asyncio
+    async def test_moves_inline_system_messages_to_leading_prompt(self) -> None:
+        request = MagicMock()
+        request.system_message = SystemMessage(content="Base instructions")
+        request.messages = [
+            HumanMessage(content="Research RTX 5090 inference."),
+            SystemMessage(content="Return cited sources."),
+            AIMessage(content="I will research it."),
+            SystemMessage(content="Keep the final answer concise."),
+        ]
+        normalized_request = MagicMock()
+        request.override.return_value = normalized_request
+        handler = AsyncMock(return_value="ok")
+
+        result = await SystemMessageOrderMiddleware().awrap_model_call(request, handler)
+
+        assert result == "ok"
+        request.override.assert_called_once()
+        override = request.override.call_args.kwargs
+        assert override["messages"] == [request.messages[0], request.messages[2]]
+        assert override["system_message"].content == (
+            "Base instructions\n\nReturn cited sources.\n\nKeep the final answer concise."
+        )
+        handler.assert_awaited_once_with(normalized_request)
+
+    @pytest.mark.asyncio
+    async def test_leaves_compatible_history_unchanged(self) -> None:
+        request = MagicMock()
+        request.system_message = SystemMessage(content="Base instructions")
+        request.messages = [HumanMessage(content="Research local inference.")]
+        handler = AsyncMock(return_value="ok")
+
+        result = await SystemMessageOrderMiddleware().awrap_model_call(request, handler)
+
+        assert result == "ok"
+        request.override.assert_not_called()
+        handler.assert_awaited_once_with(request)
+
+    @pytest.mark.asyncio
+    async def test_flattens_multiblock_leading_system_message_for_ollama(self) -> None:
+        request = MagicMock()
+        request.system_message = SystemMessage(
+            content=[
+                {"type": "text", "text": "Base instructions."},
+                {"type": "text", "text": "\n\nDeep-agent instructions."},
+            ]
+        )
+        request.messages = [HumanMessage(content="Research local inference.")]
+        normalized_request = MagicMock()
+        request.override.return_value = normalized_request
+        handler = AsyncMock(return_value="ok")
+
+        await SystemMessageOrderMiddleware().awrap_model_call(request, handler)
+
+        override = request.override.call_args.kwargs
+        assert override["messages"] == request.messages
+        assert override["system_message"].content == "Base instructions.\n\nDeep-agent instructions."
+        handler.assert_awaited_once_with(normalized_request)
 
 
 class TestStructuredResponseTextFallbackMiddleware:

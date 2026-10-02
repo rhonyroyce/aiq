@@ -112,6 +112,20 @@ class KnowledgeRetrievalConfig(FunctionBaseConfig, name="knowledge_retrieval"):
     chroma_dir: str = Field(
         default="/tmp/chroma_data", description="Directory for ChromaDB persistence (LlamaIndex only)"
     )
+    reranker_model: str | None = Field(
+        default_factory=lambda: _env_value("AIQ_RERANKER_MODEL"),
+        description="Optional Ollama completion model used to rerank LlamaIndex retrieval candidates.",
+    )
+    reranker_base_url: str = Field(
+        default_factory=lambda: _env_value("AIQ_RERANKER_BASE_URL", default="http://localhost:11434"),
+        description="Ollama API base URL used by the optional LlamaIndex reranker.",
+    )
+    reranker_candidates: int = Field(
+        default_factory=lambda: _env_int("AIQ_RERANKER_CANDIDATES", 12),
+        ge=1,
+        le=50,
+        description="Vector candidates evaluated by the optional LlamaIndex reranker.",
+    )
     # Foundational RAG (hosted RAG Blueprint) options
     rag_url: str = Field(default="http://localhost:8081/v1", description="RAG query server URL (foundational_rag only)")
     ingest_url: str = Field(
@@ -364,6 +378,11 @@ def _setup_backend(config: KnowledgeRetrievalConfig, summary_llm_obj=None) -> tu
         os.environ.setdefault("AIQ_CHROMA_DIR", config.chroma_dir)
         backend_config = {
             "persist_dir": config.chroma_dir,
+            "embed_model": config.embed_model,
+            "embed_base_url": config.embed_base_url,
+            "reranker_model": config.reranker_model,
+            "reranker_base_url": config.reranker_base_url,
+            "reranker_candidates": config.reranker_candidates,
             **summary_config,
         }
 

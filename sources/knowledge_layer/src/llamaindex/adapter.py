@@ -51,6 +51,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from aiq_agent.knowledge.base import BaseIngestor
 from aiq_agent.knowledge.base import BaseRetriever
 from aiq_agent.knowledge.base import TTLCleanupMixin
@@ -1644,6 +1646,9 @@ class LlamaIndexRetriever(BaseRetriever):
         self.embed_model_name = self.config.get("embed_model", self.DEFAULT_EMBED_MODEL)
         self.embed_base_url = self.config.get("embed_base_url", self.DEFAULT_EMBED_BASE_URL)
         self.default_top_k = self.config.get("top_k", self.DEFAULT_TOP_K)
+        self.reranker_model = self.config.get("reranker_model")
+        self.reranker_base_url = self.config.get("reranker_base_url", "http://localhost:11434").rstrip("/")
+        self.reranker_candidates = self.config.get("reranker_candidates", 12)
 
         # Lazy-loaded components
         self._embed_model = None
@@ -1685,6 +1690,74 @@ class LlamaIndexRetriever(BaseRetriever):
                 "Install with: pip install llama-index llama-index-embeddings-nvidia chromadb"
             ) from e
 
+    @staticmethod
+    def _reranker_prompt(query: str, document: str) -> str:
+        instruction = "Given a web search query, retrieve relevant passages that answer the query"
+        return (
+            "<|im_start|>system\n"
+            "Judge whether the Document meets the requirements based on the Query and the Instruct provided. "
+            'Note that the answer can only be "yes" or "no".'
+            "<|im_end|>\n<|im_start|>user\n"
+            f"<Instruct>: {instruction}\n<Query>: {query}\n<Document>: {document}"
+            "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+        )
+
+    async def _rerank(self, query: str, nodes: list[Any], top_k: int) -> list[Any]:
+        """Use an Ollama-hosted Qwen reranker as a relevance gate.
+
+        Ollama does not expose a native rerank endpoint, so the Qwen model's
+        documented yes/no prompt is sent through the raw generation API. The
+        original vector order is preserved inside the relevant/non-relevant
+        groups. Requests are deliberately sequential to honor the deployment's
+        single-model, single-parallel-request GPU policy.
+        """
+        if not self.reranker_model or not nodes:
+            return nodes[:top_k]
+
+        endpoint = f"{self.reranker_base_url.removesuffix('/v1')}/api/generate"
+        ranked: list[tuple[bool, int, Any]] = []
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                for index, node_with_score in enumerate(nodes):
+                    node = getattr(node_with_score, "node", None)
+                    if node is None:
+                        ranked.append((False, index, node_with_score))
+                        continue
+                    document = node.get_content() if hasattr(node, "get_content") else str(node)
+                    response = await client.post(
+                        endpoint,
+                        json={
+                            "model": self.reranker_model,
+                            "prompt": self._reranker_prompt(query, document),
+                            "raw": True,
+                            "stream": False,
+                            "keep_alive": "5m",
+                            "options": {"temperature": 0, "num_predict": 1},
+                        },
+                    )
+                    response.raise_for_status()
+                    relevant = response.json().get("response", "").strip().lower().startswith("yes")
+                    ranked.append((relevant, index, node_with_score))
+
+                # Release the reranker immediately. Ollama can then load the
+                # research LLM while still enforcing OLLAMA_MAX_LOADED_MODELS=1.
+                await client.post(
+                    endpoint,
+                    json={"model": self.reranker_model, "keep_alive": 0},
+                )
+        except Exception as exc:
+            logger.warning("Ollama reranking failed; retaining vector order: %s", exc)
+            return nodes[:top_k]
+
+        ranked.sort(key=lambda item: (not item[0], item[1]))
+        relevant_count = sum(1 for relevant, _, _ in ranked if relevant)
+        logger.info(
+            "Ollama reranker marked %d/%d candidates relevant",
+            relevant_count,
+            len(ranked),
+        )
+        return [node for _, _, node in ranked[:top_k]]
+
     async def retrieve(
         self,
         query: str,
@@ -1720,8 +1793,10 @@ class LlamaIndexRetriever(BaseRetriever):
             index = VectorStoreIndex.from_vector_store(vector_store)
 
             # Create retriever and query
-            retriever = index.as_retriever(similarity_top_k=top_k)
+            candidate_count = max(top_k, self.reranker_candidates) if self.reranker_model else top_k
+            retriever = index.as_retriever(similarity_top_k=candidate_count)
             nodes = retriever.retrieve(query)
+            nodes = await self._rerank(query, nodes, top_k)
 
             # Normalize results to Chunk schema
             chunks = [self.normalize(node) for node in nodes]

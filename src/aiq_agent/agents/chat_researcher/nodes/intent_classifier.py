@@ -25,6 +25,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.messages import BaseMessage
+from langchain_core.messages import HumanMessage
 from langchain_core.messages import SystemMessage
 
 from aiq_agent.common import extract_json
@@ -135,7 +136,14 @@ class IntentClassifier:
         )
         # Keep the router isolated from prior assistant report bodies. The prompt already contains
         # the latest query and report availability, which is the bounded context needed here.
-        messages: list[BaseMessage] = [SystemMessage(content=system_content)]
+        # Keep the classification instructions isolated from history while
+        # retaining a user-role turn. Some OpenAI-compatible local runtimes
+        # (including Ollama) reject conversations containing only a system
+        # message.
+        messages: list[BaseMessage] = [
+            SystemMessage(content=system_content),
+            HumanMessage(content=query),
+        ]
 
         try:
             config = {"callbacks": self.callbacks} if self.callbacks else {}
@@ -268,7 +276,13 @@ class IntentClassifier:
         )
         try:
             response = await asyncio.wait_for(
-                self.llm.ainvoke([SystemMessage(content=repair_prompt)], config=config),
+                self.llm.ainvoke(
+                    [
+                        SystemMessage(content=repair_prompt),
+                        HumanMessage(content="Return the corrected JSON object."),
+                    ],
+                    config=config,
+                ),
                 timeout=min(self.llm_timeout, _REPAIR_TIMEOUT_SECONDS),
             )
         except TimeoutError:
